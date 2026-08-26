@@ -122,6 +122,7 @@ namespace conmaker
         private string currentTab = "ОСНОВНОЕ";
 
         private TransparentPanel pnlTitleBar;
+        private TransparentLabel lblAppTitle;
         private DBPanel keyboardPanel;
         private DBPanel settingsPanel;
         private RichTextBox txtAliases;
@@ -185,6 +186,11 @@ namespace conmaker
             }
         }
 
+        private string GetLastConfigPath()
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_cfg.txt");
+        }
+
         private void WmGetMinMaxInfo(ref Message m)
         {
             MINMAXINFO mmi = (MINMAXINFO)Marshal.PtrToStructure(m.LParam, typeof(MINMAXINFO));
@@ -196,10 +202,9 @@ namespace conmaker
                 GetMonitorInfo(monitor, ref monitorInfo);
 
                 Rectangle rcWorkArea = new Rectangle(monitorInfo.rcWork.Left, monitorInfo.rcWork.Top, monitorInfo.rcWork.Right - monitorInfo.rcWork.Left, monitorInfo.rcWork.Bottom - monitorInfo.rcWork.Top);
-                Rectangle rcMonitorArea = new Rectangle(monitorInfo.rcMonitor.Left, monitorInfo.rcMonitor.Top, monitorInfo.rcMonitor.Right - monitorInfo.rcMonitor.Left, monitorInfo.rcMonitor.Bottom - monitorInfo.rcMonitor.Top);
 
-                mmi.ptMaxPosition.X = rcWorkArea.Left - rcMonitorArea.Left;
-                mmi.ptMaxPosition.Y = rcWorkArea.Top - rcMonitorArea.Top;
+                mmi.ptMaxPosition.X = 0;
+                mmi.ptMaxPosition.Y = 0;
                 mmi.ptMaxSize.X = rcWorkArea.Width;
                 mmi.ptMaxSize.Y = rcWorkArea.Height;
                 mmi.ptMaxTrackSize.X = rcWorkArea.Width;
@@ -225,6 +230,12 @@ namespace conmaker
                     int x = unchecked((short)(long)m.LParam);
                     int y = unchecked((short)((long)m.LParam >> 16));
                     Point pt = this.PointToClient(new Point(x, y));
+
+                    if (this.WindowState == FormWindowState.Maximized)
+                    {
+                        if (pt.Y <= 35 && pt.X < this.ClientSize.Width - 120) m.Result = (IntPtr)HT_CAPTION;
+                        return;
+                    }
 
                     bool onLeft = pt.X <= RESIZE_HANDLE_SIZE;
                     bool onRight = pt.X >= this.ClientSize.Width - RESIZE_HANDLE_SIZE;
@@ -374,6 +385,10 @@ namespace conmaker
             };
 
             this.Resize += (s, e) => {
+                if (pnlTitleBar != null)
+                {
+                    pnlTitleBar.Top = 0;
+                }
                 if (keyboardPanel != null)
                 {
                     keyboardPanel.Size = new Size(this.ClientSize.Width - 40, this.ClientSize.Height - (topMenuY + 55) - 20);
@@ -383,23 +398,33 @@ namespace conmaker
             };
 
             UpdateUIThemeAndLanguage();
+
+            string memFile = GetLastConfigPath();
+            if (File.Exists(memFile))
+            {
+                string lastPath = File.ReadAllText(memFile).Trim();
+                if (File.Exists(lastPath))
+                {
+                    currentFilePath = lastPath;
+                    isNewConfig = false;
+                    ParseConfig(currentFilePath);
+                }
+            }
         }
 
         private void CreateTitleBar()
         {
-            pnlTitleBar = new TransparentPanel { Location = new Point(0, 4), Size = new Size(this.Width, 30), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.FromArgb(20, 20, 25) };
-
-            // Добавляем картинку-иконку слева в шапку
+            pnlTitleBar = new TransparentPanel { Location = new Point(0, 0), Size = new Size(this.Width, 30), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.FromArgb(20, 20, 25) };
             PictureBox picIcon = new PictureBox
             {
-                Image = conmaker.Properties.Resources.HLCM.ToBitmap(), // Или загрузи картинку/иконку
+                Image = conmaker.Properties.Resources.HLCM.ToBitmap(),
                 SizeMode = PictureBoxSizeMode.Zoom,
                 Size = new Size(18, 18),
                 Location = new Point(10, 6)
             };
             pnlTitleBar.Controls.Add(picIcon);
 
-            TransparentLabel lblAppTitle = new TransparentLabel { Text = "Half-Life Config Maker", ForeColor = Color.LightGray, Font = new Font("Segoe UI", 9, FontStyle.Bold), AutoSize = true, Location = new Point(32, 7) };
+            lblAppTitle = new TransparentLabel { Text = "Half-Life Config Maker", Font = new Font("Segoe UI", 9, FontStyle.Bold), AutoSize = true, Location = new Point(38, 6) };
             pnlTitleBar.Controls.Add(lblAppTitle);
 
             pnlTitleBar.DoubleClick += ToggleMaximize;
@@ -567,8 +592,21 @@ namespace conmaker
                     btn.BackColor = isDarkMode ? Color.FromArgb(60, 60, 65) : Color.FromArgb(200, 200, 205);
             };
             btn.MouseLeave += (s, e) => {
-                if (btn.BackColor == Color.FromArgb(60, 60, 65) || btn.BackColor == Color.FromArgb(200, 200, 205))
+                if (btn.BackColor == Color.FromArgb(60, 60, 65) || btn.BackColor == Color.FromArgb(200, 200, 205) || btn.BackColor == Color.DarkOrange)
                     btn.BackColor = btnColor;
+            };
+            btn.MouseDown += (s, e) => {
+                if (e.Button == MouseButtons.Left)
+                    btn.BackColor = Color.DarkOrange;
+            };
+            btn.MouseUp += (s, e) => {
+                if (e.Button == MouseButtons.Left)
+                {
+                    if (btn.ClientRectangle.Contains(btn.PointToClient(Cursor.Position)))
+                        btn.BackColor = isDarkMode ? Color.FromArgb(60, 60, 65) : Color.FromArgb(200, 200, 205);
+                    else
+                        btn.BackColor = btnColor;
+                }
             };
         }
 
@@ -607,6 +645,7 @@ namespace conmaker
         {
             this.BackColor = bgColor;
             if (pnlTitleBar != null) pnlTitleBar.BackColor = isDarkMode ? Color.FromArgb(20, 20, 25) : Color.FromArgb(210, 210, 215);
+            if (lblAppTitle != null) lblAppTitle.ForeColor = isDarkMode ? Color.LightGray : Color.Black;
 
             btnOpen.Text = isEnglish ? "OPEN CONFIG" : "ОТКРЫТЬ КОНФИГ";
             btnNew.Text = isEnglish ? "NEW CONFIG" : "НОВЫЙ КОНФИГ";
@@ -643,7 +682,7 @@ namespace conmaker
             btnLang.ForeColor = textColor;
             globalToolTip.SetToolTip(btnLang, isEnglish ? "Change Language" : "Сменить язык");
 
-            lblAliases.Text = isEnglish ? "ALIASES / SCRIPTS" : "АЛИАСЫ / СКРИПТЫ";
+            lblAliases.Text = isEnglish ? "АЛИАСЫ / СКРИПТЫ" : "АЛИАСЫ / СКРИПТЫ";
             lblAliases.ForeColor = textColor;
 
             btnSnippets.BackColor = Color.FromArgb(70, 130, 180);
@@ -806,6 +845,7 @@ namespace conmaker
                 {
                     currentFilePath = ofd.FileName;
                     isNewConfig = false;
+                    File.WriteAllText(GetLastConfigPath(), currentFilePath);
                     ParseConfig(currentFilePath);
                     DrawInterface();
                 }
@@ -862,6 +902,8 @@ namespace conmaker
                 string backupPath = currentFilePath + ".backup";
                 File.Copy(currentFilePath, backupPath, true);
             }
+
+            File.WriteAllText(GetLastConfigPath(), currentFilePath);
 
             List<string> newLines = new List<string>();
             HashSet<string> handledBinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1274,10 +1316,8 @@ namespace conmaker
             int numpadTotalWidth = (4 * standardBtnWidth) + (3 * padding);
             int numpadRightEdge = numX + numpadTotalWidth;
 
-            // 1. ВЫРАВНИВАЕМ ЛЕВЫЕ КНОПКИ ПО КРАЮ КЛАВИАТУРЫ
             if (btnOpen != null)
             {
-                // Берем точный отступ первой кнопки ESC/Тильда и применяем его к верхнему меню
                 int leftAlignX = keyboardPanel.Left + startX;
 
                 btnOpen.Left = leftAlignX;
@@ -1287,35 +1327,30 @@ namespace conmaker
                 btnUnbindAll.Left = btnChecklist.Right + 10;
             }
 
-            // 2. ВЫРАВНИВАЕМ И МЕНЯЕМ РАЗМЕР ПРАВЫХ КНОПОК
             if (btnLang != null && btnTheme != null && btnToggleIcons != null && btnOpen != null)
             {
                 int topMenuY = 45;
                 int targetSize = 45;
 
-                // Применяем высоту к левым кнопкам
                 btnOpen.Height = targetSize;
                 btnNew.Height = targetSize;
                 btnSave.Height = targetSize;
                 btnChecklist.Height = targetSize;
                 btnUnbindAll.Height = targetSize;
 
-                // Делаем правые кнопки квадратами
                 btnLang.Size = new Size(targetSize, targetSize);
                 btnTheme.Size = new Size(targetSize, targetSize);
                 btnToggleIcons.Size = new Size(targetSize, targetSize);
 
-                // Очищаем старые подписки (обрати внимание, что отписываемся через пустые лямбды, так как напрямую метод с 3 аргументами отписать нельзя)
                 btnToggleIcons.Paint -= (s, e) => DrawTopAccent(s, e, Color.Transparent);
-                btnToggleIcons.Paint += (s, e) => DrawTopAccent(s, e, Color.FromArgb(70, 130, 180)); // Синяя (как у "Открыть")
+                btnToggleIcons.Paint += (s, e) => DrawTopAccent(s, e, Color.FromArgb(70, 130, 180));
 
                 btnLang.Paint -= (s, e) => DrawTopAccent(s, e, Color.Transparent);
-                btnLang.Paint += (s, e) => DrawTopAccent(s, e, Color.FromArgb(147, 112, 219)); // Фиолетовая (как у "Чеклист")
+                btnLang.Paint += (s, e) => DrawTopAccent(s, e, Color.FromArgb(147, 112, 219));
 
                 btnTheme.Paint -= (s, e) => DrawTopAccent(s, e, Color.Transparent);
-                btnTheme.Paint += (s, e) => DrawTopAccent(s, e, isDarkMode ? Color.FromArgb(240, 240, 245) : Color.FromArgb(30, 30, 35)); // Противоположная цвету темы
+                btnTheme.Paint += (s, e) => DrawTopAccent(s, e, isDarkMode ? Color.FromArgb(240, 240, 245) : Color.FromArgb(30, 30, 35));
 
-                // Привязываем правую границу к правому краю нумпада
                 int rightAlignX = keyboardPanel.Left + numpadRightEdge;
 
                 btnLang.Location = new Point(rightAlignX - btnLang.Width, topMenuY);
@@ -1352,9 +1387,9 @@ namespace conmaker
             {
                 { "MOUSE1", new Tuple<Rectangle, string>(new Rectangle(mX, mY, (int)(120 * scaleX), (int)(220 * scaleY)), "LMB") },
                 { "MOUSE2", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(210 * scaleX), mY, (int)(120 * scaleX), (int)(220 * scaleY)), "RMB") },
-                { "MWHEELUP", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY, (int)(74 * scaleX), (int)(65 * scaleY)), "W.UP") },
-                { "MOUSE3", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY + (int)(75 * scaleY), (int)(74 * scaleX), (int)(70 * scaleY)), "MID") },
-                { "MWHEELDOWN", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY + (int)(155 * scaleY), (int)(74 * scaleX), (int)(65 * scaleY)), "W.DN") },
+                { "MWHEELUP", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY, (int)(74 * scaleX), (int)(65 * scaleY)), "MWU") },
+                { "MOUSE3", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY + (int)(75 * scaleY), (int)(74 * scaleX), (int)(70 * scaleY)), "MMB") },
+                { "MWHEELDOWN", new Tuple<Rectangle, string>(new Rectangle(mX + (int)(128 * scaleX), mY + (int)(155 * scaleY), (int)(74 * scaleX), (int)(65 * scaleY)), "MWD") },
                 { "MOUSE5", new Tuple<Rectangle, string>(new Rectangle(mX - (int)(85 * scaleX), mY + (int)(35 * scaleY), (int)(75 * scaleX), (int)(65 * scaleY)), "M5") },
                 { "MOUSE4", new Tuple<Rectangle, string>(new Rectangle(mX - (int)(85 * scaleX), mY + (int)(120 * scaleY), (int)(75 * scaleX), (int)(65 * scaleY)), "M4") }
             };
@@ -1388,7 +1423,7 @@ namespace conmaker
                 btn.Location = rect.Location;
             }
 
-            int totalTabsWidth = (int)(480 * scaleX);
+            int totalTabsWidth = (int)(550 * scaleX); // Расширили зону настроек с 480 до 550
             int gapSettingsMouse = (int)(25 * scaleX);
             int leftmostMouseX = mX - (int)(85 * scaleX);
             int genX = leftmostMouseX - gapSettingsMouse - totalTabsWidth;
@@ -1453,14 +1488,15 @@ namespace conmaker
 
             PopulateSettingsTab(fontSize, scaleX, scaleY);
 
+            int aliasTop = mY;
             int aliasW = genX - startX - horizontalGap;
-            lblAliases.Location = new Point(startX, lowerSectionY + (int)(10 * scaleY));
+            lblAliases.Location = new Point(startX, aliasTop - lblAliases.Height - 5);
             if (btnSnippets != null) btnSnippets.Location = new Point(lblAliases.Right + 10, lblAliases.Top - 2);
 
             if (pnlAliasBorder != null)
             {
-                pnlAliasBorder.Size = new Size(aliasW, availableHeight);
-                pnlAliasBorder.Location = new Point(startX, settingsY);
+                pnlAliasBorder.Size = new Size(aliasW, keyboardPanel.Height - aliasTop - (int)(10 * scaleY));
+                pnlAliasBorder.Location = new Point(startX, aliasTop);
             }
 
             keyboardPanel.ResumeLayout(true);
@@ -1470,7 +1506,6 @@ namespace conmaker
         {
             settingsPanel.SuspendLayout();
 
-            // ЖЕСТКИЙ ФИКС СКРОЛЛБАРА ПРИ РЕКАЛКУЛЯЦИИ:
             settingsPanel.AutoScroll = false;
             settingsPanel.AutoScrollPosition = new Point(0, 0);
 
@@ -1520,7 +1555,7 @@ namespace conmaker
                 int xOffset = col * colWidth;
 
                 Control[] foundLbl = settingsPanel.Controls.Find($"lbl_set_{gKey}", false);
-                Label lbl = foundLbl.Length > 0 ? (Label)foundLbl[0] : new Label { Name = $"lbl_set_{gKey}", AutoSize = true, Font = new Font("Segoe UI", fontSize, FontStyle.Regular) };
+                Label lbl = foundLbl.Length > 0 ? (Label)foundLbl[0] : new Label { Name = $"lbl_set_{gKey}", AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
 
                 lbl.ForeColor = isDarkMode ? Color.White : Color.Black;
                 lbl.Text = gKey;
@@ -1529,7 +1564,7 @@ namespace conmaker
                 if (!settingsPanel.Controls.Contains(lbl)) settingsPanel.Controls.Add(lbl);
 
                 Control[] foundTxt = settingsPanel.Controls.Find($"txt_set_{gKey}", false);
-                TextBox txt = foundTxt.Length > 0 ? (TextBox)foundTxt[0] : new TextBox { Name = $"txt_set_{gKey}", BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", fontSize + 1, FontStyle.Regular) };
+                TextBox txt = foundTxt.Length > 0 ? (TextBox)foundTxt[0] : new TextBox { Name = $"txt_set_{gKey}", BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 10, FontStyle.Regular) };
 
                 txt.BackColor = btnColor;
                 txt.ForeColor = isDarkMode ? Color.White : Color.Black;
@@ -1543,7 +1578,7 @@ namespace conmaker
                 txt.Text = txtVal;
 
                 txt.Size = new Size((int)(60 * scaleX), (int)(25 * scaleY));
-                txt.Location = new Point(xOffset + (int)(130 * scaleX), yOffset + 2);
+                txt.Location = new Point(xOffset + (int)(170 * scaleX), yOffset + 2); // Сдвинули поле ввода правее со 130 до 170
                 txt.Visible = true;
 
                 if (currentTab == "ПРИЦЕЛ" && gKey.StartsWith("cl_cross"))
@@ -1570,12 +1605,45 @@ namespace conmaker
                 }
                 if (!settingsPanel.Controls.Contains(underline)) settingsPanel.Controls.Add(underline);
 
+                // Изменили шрифт с 11 до 9
+                Control[] foundBtnRes = settingsPanel.Controls.Find($"btn_res_{gKey}", false);
+                Button btnRes = foundBtnRes.Length > 0 ? (Button)foundBtnRes[0] : new Button { Name = $"btn_res_{gKey}", FlatStyle = FlatStyle.Flat, Text = "↻", Font = new Font("Segoe UI", 9, FontStyle.Bold), Cursor = Cursors.Hand };
+
+                btnRes.FlatAppearance.BorderSize = 0;
+                btnRes.BackColor = Color.Transparent;
+                btnRes.ForeColor = isDarkMode ? Color.Gray : Color.DarkGray;
+                btnRes.Size = new Size((int)(24 * scaleX), txt.Height + 4);
+                btnRes.Location = new Point(txt.Right + 2, txt.Top - 2);
+                btnRes.Padding = new Padding(0);
+                btnRes.TextAlign = ContentAlignment.MiddleCenter;
+                btnRes.Visible = true;
+
+                if (btnRes.Tag == null)
+                {
+                    btnRes.MouseEnter += (s, e) => { btnRes.ForeColor = isDarkMode ? Color.White : Color.Black; };
+                    btnRes.MouseLeave += (s, e) => { btnRes.ForeColor = isDarkMode ? Color.Gray : Color.DarkGray; };
+                    btnRes.Click += (s, e) => {
+                        if (gKey.Equals("rate", StringComparison.OrdinalIgnoreCase)) txt.Text = "250000";
+                        else if (gKey.Equals("ex_interp", StringComparison.OrdinalIgnoreCase)) txt.Text = "0.01";
+                        else if (gKey.Equals("cl_cross_size", StringComparison.OrdinalIgnoreCase)) txt.Text = "5";
+                        else if (gKey.Equals("cl_cross_color", StringComparison.OrdinalIgnoreCase)) txt.Text = "0 255 0";
+                        else if (gKey.Equals("cl_cross_thickness", StringComparison.OrdinalIgnoreCase)) txt.Text = "2";
+                        else if (gKey.Equals("cl_cross_gap", StringComparison.OrdinalIgnoreCase)) txt.Text = "3";
+                        else txt.Text = "";
+
+                        SaveSettingsFromUI();
+                        if (currentTab == "ПРИЦЕЛ") pnlCrosshairPreview?.Invalidate();
+                    };
+                    btnRes.Tag = true;
+                }
+
+                if (!settingsPanel.Controls.Contains(btnRes)) settingsPanel.Controls.Add(btnRes);
+
                 drawnCount++;
             }
 
             settingsPanel.ResumeLayout(true);
 
-            // Включаем скролл обратно, заставляя Windows пересчитать внутренние элементы!
             settingsPanel.AutoScroll = true;
             settingsPanel.PerformLayout();
         }
@@ -1726,13 +1794,23 @@ namespace conmaker
             Form prompt = new Form() { Width = 420, Height = 180, FormBorderStyle = FormBorderStyle.FixedDialog, Text = titleText, StartPosition = FormStartPosition.CenterParent, BackColor = bgColor, ForeColor = textColor };
 
             Label lblCmd = new Label { Text = isEnglish ? "Command / Bind:" : "Команда (бинд):", Location = new Point(20, 10), AutoSize = true };
+            prompt.Controls.Add(lblCmd);
+
+            TextBox textBox = new TextBox() { Left = 20, Top = 30, Width = 360, Text = currentCommand, BackColor = btnColor, ForeColor = textColor, BorderStyle = BorderStyle.FixedSingle };
 
             if (!bindings.ContainsKey(key) && defaultBindings.ContainsKey(key))
             {
-                lblCmd.Text += isEnglish ? $" (Default: {defaultBindings[key]})" : $" (По умолчанию: {defaultBindings[key]})";
+                Label lblDef = new Label
+                {
+                    Text = isEnglish ? $"(Default: {defaultBindings[key]})" : $"(По умолчанию: {defaultBindings[key]})",
+                    Location = new Point(lblCmd.Right + 5, 10),
+                    AutoSize = true,
+                    ForeColor = Color.DodgerBlue,
+                    Cursor = Cursors.Hand
+                };
+                lblDef.Click += (s, e) => { textBox.Text = defaultBindings[key]; };
+                prompt.Controls.Add(lblDef);
             }
-
-            TextBox textBox = new TextBox() { Left = 20, Top = 30, Width = 360, Text = currentCommand, BackColor = btnColor, ForeColor = textColor, BorderStyle = BorderStyle.FixedSingle };
 
             AutoCompleteStringCollection autoSource = new AutoCompleteStringCollection();
             autoSource.AddRange(popularCommands.ToArray());
@@ -1756,7 +1834,6 @@ namespace conmaker
             Button confirmation = new Button() { Text = "ОК", Left = 280, Width = 100, Top = 80, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(70, 130, 180), ForeColor = Color.White };
             confirmation.FlatAppearance.BorderSize = 0;
 
-            prompt.Controls.Add(lblCmd);
             prompt.Controls.Add(textBox);
             prompt.Controls.Add(btnUnbind);
             prompt.Controls.Add(confirmation);
