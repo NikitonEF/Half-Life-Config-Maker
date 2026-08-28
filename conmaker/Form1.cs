@@ -1,4 +1,5 @@
 #nullable disable
+using ScintillaNET;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -95,6 +96,10 @@ namespace conmaker
         };
         private Dictionary<string, string> settingsValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        private static readonly Regex rAlias = new Regex(@"\balias\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex rQuotes = new Regex("\".*?\"", RegexOptions.Compiled);
+        private static readonly Regex rCommands = new Regex(@"(\+|-)[a-zA-Z0-9_]+", RegexOptions.Compiled);
+        private static readonly Regex rBasicCmds = new Regex(@"\b(wait|say|say_team|bind|unbind|name|model|drop)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private PrivateFontCollection pfc = new PrivateFontCollection();
         private Font iconFont;
         private bool showIcons = false;
@@ -123,19 +128,18 @@ namespace conmaker
 
         private TransparentPanel pnlTitleBar;
         private TransparentLabel lblAppTitle;
-        private DBPanel keyboardPanel;
+        private Panel keyboardPanel;
         private DBPanel settingsPanel;
-        private RichTextBox txtAliases;
+        private Scintilla txtAliases;
         private Label lblAliases;
         private Panel pnlAliasBorder;
         private Button btnSnippets;
-
-        private System.Windows.Forms.Timer syntaxTimer;
         private System.Windows.Forms.Timer magicRefreshTimer;
         private DBPanel pnlCrosshairPreview;
-
-        private Button btnOpen, btnNew, btnSave, btnChecklist, btnToggleIcons, btnUnbindAll, btnLang, btnTheme;
+        private Button btnOpen, btnNew, btnSave, btnChecklist, btnToggleIcons, btnUnbindAll, btnLang, btnTheme, btnToggleCrosshair;
         private ToolTip globalToolTip;
+        private Dictionary<string, Button> uiCache = new Dictionary<string, Button>();
+        private bool enableCrosshair = false;
 
         private Dictionary<string, string> displayNames = new Dictionary<string, string>
         {
@@ -153,7 +157,7 @@ namespace conmaker
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x02000000;
+                //cp.ExStyle |= 0x02000000;
                 return cp;
             }
         }
@@ -188,7 +192,19 @@ namespace conmaker
 
         private string GetLastConfigPath()
         {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "last_cfg.txt");
+            // 1. Просим у Windows путь к AppData (обычно это C:\Users\Имя\AppData\Roaming)
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+            // 2. Формируем путь к нашей личной папке
+            string myFolder = Path.Combine(appData, "HalfLifeConMaker");
+
+            // 3. IO-проверка через класс Directory (нужен using System.IO;)
+            if (!Directory.Exists(myFolder))
+            {
+                Directory.CreateDirectory(myFolder); // Диск выделит память и создаст директорию
+
+            }
+            return Path.Combine(myFolder, "last_cfg.txt");
         }
 
         private void WmGetMinMaxInfo(ref Message m)
@@ -255,6 +271,20 @@ namespace conmaker
                 return;
             }
             base.WndProc(ref m);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            // Если нажато Ctrl+C и фокус в текстовом поле
+            if (keyData == (Keys.Control | Keys.C) && txtAliases.Focused)
+            {
+                if (!string.IsNullOrEmpty(txtAliases.SelectedText))
+                {
+                    try { Clipboard.SetText(txtAliases.SelectedText); } catch { }
+                }
+                return true; // Говорим Windows, что мы уже обработали кнопку (блокирует краш FCTB)
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         public Form1()
@@ -328,6 +358,18 @@ namespace conmaker
             AttachHover(btnToggleIcons);
             this.Controls.Add(btnToggleIcons);
 
+            btnToggleCrosshair = new Button { Size = new Size(40, 40), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI Symbol", 14, FontStyle.Regular) };
+            btnToggleCrosshair.FlatAppearance.BorderSize = 0;
+            btnToggleCrosshair.Paint += (s, e) =>
+                DrawTopAccent(s, e, Color.FromArgb(180, 60, 60));
+            btnToggleCrosshair.Click += (s, e) => {
+                enableCrosshair = !enableCrosshair;
+                UpdateUIThemeAndLanguage();
+                if (pnlCrosshairPreview != null) pnlCrosshairPreview.Invalidate();
+            };
+            AttachHover(btnToggleCrosshair);
+            this.Controls.Add(btnToggleCrosshair);
+
             btnTheme = new Button { Size = new Size(40, 40), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 14, FontStyle.Regular) };
             btnTheme.FlatAppearance.BorderSize = 0;
             btnTheme.Click += (s, e) => {
@@ -346,7 +388,7 @@ namespace conmaker
             AttachHover(btnLang);
             this.Controls.Add(btnLang);
 
-            keyboardPanel = new DBPanel
+            keyboardPanel = new Panel
             {
                 Location = new Point(20, topMenuY + 55),
                 Size = new Size(this.ClientSize.Width - 40, this.ClientSize.Height - (topMenuY + 55) - 20),
@@ -363,12 +405,38 @@ namespace conmaker
             btnSnippets.Click += BtnSnippets_Click;
 
             pnlAliasBorder = new Panel { Padding = new Padding(1) };
-            txtAliases = new RichTextBox { BorderStyle = BorderStyle.None, Font = new Font("Consolas", 10), HideSelection = false, Dock = DockStyle.Fill, WordWrap = false };
+
+            txtAliases = new Scintilla();
+            txtAliases.Dock = DockStyle.Fill;
+            txtAliases.WrapMode = WrapMode.None; // Аналог WordWrap = false
+            txtAliases.BorderStyle = BorderStyle.None;
+
+            // Настраиваем шрифт
+            txtAliases.Styles[Style.Default].Font = "Consolas";
+            txtAliases.Styles[Style.Default].Size = 10;
+
+            // Отключаем серые поля слева (номера строк)
+            txtAliases.Margins[0].Width = 0;
+            txtAliases.Margins[1].Width = 0;
+
+            // Базовые цвета холста
+            txtAliases.Styles[Style.Default].ForeColor = textColor;
+            txtAliases.Styles[Style.Default].BackColor = btnColor;
+            txtAliases.StyleClearAll(); // Применяем базу ко всему тексту
+
+            // Цвета для наших регулярок
+            txtAliases.Styles[1].ForeColor = Color.SpringGreen;
+            txtAliases.Styles[2].ForeColor = Color.Gold;
+            txtAliases.Styles[3].ForeColor = Color.FromArgb(147, 112, 219);
+
+            // Подписываемся на умный рендеринг
+            txtAliases.StyleNeeded += TxtAliases_StyleNeeded;
+
             pnlAliasBorder.Controls.Add(txtAliases);
 
-            syntaxTimer = new System.Windows.Forms.Timer { Interval = 800 };
-            syntaxTimer.Tick += (s, e) => { syntaxTimer.Stop(); HighlightSyntax(); };
-            txtAliases.TextChanged += (s, e) => { syntaxTimer.Stop(); syntaxTimer.Start(); };
+            //syntaxTimer = new System.Windows.Forms.Timer { Interval = 800 };
+            //syntaxTimer.Tick += (s, e) => { syntaxTimer.Stop(); HighlightSyntax(); };
+            //txtAliases.TextChanged += (s, e) => { syntaxTimer.Stop(); syntaxTimer.Start(); };
 
             keyboardPanel.Controls.Add(lblAliases);
             keyboardPanel.Controls.Add(btnSnippets);
@@ -380,7 +448,6 @@ namespace conmaker
                 if (keyboardPanel != null && this.WindowState != FormWindowState.Minimized)
                 {
                     DrawInterface();
-                    this.Refresh();
                 }
             };
 
@@ -516,8 +583,7 @@ namespace conmaker
             if (!string.IsNullOrWhiteSpace(txtAliases.Text)) txtAliases.AppendText("\n\n");
             txtAliases.AppendText(text);
             txtAliases.Focus();
-            txtAliases.ScrollToCaret();
-            HighlightSyntax();
+            txtAliases.ScrollCaret();
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -529,50 +595,46 @@ namespace conmaker
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         private static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, ref POINT lParam);
 
-        private void HighlightSyntax()
-        {
-            if (string.IsNullOrWhiteSpace(txtAliases.Text)) return;
-
-            SendMessage(txtAliases.Handle, WM_SETREDRAW, 0, 0);
-            int selStart = txtAliases.SelectionStart;
-            int selLen = txtAliases.SelectionLength;
-
-            POINT scrollPos = new POINT();
-            SendMessage(txtAliases.Handle, EM_GETSCROLLPOS, 0, ref scrollPos);
-
-            txtAliases.SelectAll();
-            txtAliases.SelectionColor = textColor;
-
-            Regex rAlias = new Regex(@"\balias\b", RegexOptions.IgnoreCase);
-            Regex rQuotes = new Regex("\".*?\"");
-            Regex rCommands = new Regex(@"(\+|-)[a-zA-Z0-9_]+");
-
-            Color aliasCol = Color.FromArgb(147, 112, 219);
-            Color quoteCol = isDarkMode ? Color.Gold : Color.DarkGoldenrod;
-            Color cmdCol = isDarkMode ? Color.SpringGreen : Color.ForestGreen;
-
-            foreach (Match m in rQuotes.Matches(txtAliases.Text))
-            {
-                txtAliases.Select(m.Index, m.Length);
-                txtAliases.SelectionColor = quoteCol;
-            }
-            foreach (Match m in rCommands.Matches(txtAliases.Text))
-            {
-                txtAliases.Select(m.Index, m.Length);
-                txtAliases.SelectionColor = cmdCol;
-            }
-            foreach (Match m in rAlias.Matches(txtAliases.Text))
-            {
-                txtAliases.Select(m.Index, m.Length);
-                txtAliases.SelectionColor = aliasCol;
-            }
-
-            txtAliases.Select(selStart, selLen);
-
-            SendMessage(txtAliases.Handle, EM_SETSCROLLPOS, 0, ref scrollPos);
-            SendMessage(txtAliases.Handle, WM_SETREDRAW, 1, 0);
-            txtAliases.Invalidate();
-        }
+        //private void HighlightSyntax()
+        //{
+        //    if (string.IsNullOrWhiteSpace(txtAliases.Text)) return;
+        //
+        //    SendMessage(txtAliases.Handle, WM_SETREDRAW, 0, 0);
+        //    int selStart = txtAliases.SelectionStart;
+        //    int selLen = txtAliases.SelectionLength;
+        //
+        //    POINT scrollPos = new POINT();
+        //   SendMessage(txtAliases.Handle, EM_GETSCROLLPOS, 0, ref scrollPos);
+        //
+        //    txtAliases.SelectAll();
+        //    txtAliases.SelectionColor = textColor;
+        //
+        //    Color aliasCol = Color.FromArgb(147, 112, 219);
+        //    Color quoteCol = isDarkMode ? Color.Gold : Color.DarkGoldenrod;
+        //    Color cmdCol = isDarkMode ? Color.SpringGreen : Color.ForestGreen;
+        //
+        //    foreach (Match m in rQuotes.Matches(txtAliases.Text))
+        //    {
+        //        txtAliases.Select(m.Index, m.Length);
+        //       txtAliases.SelectionColor = quoteCol;
+        //    }
+        //    foreach (Match m in rCommands.Matches(txtAliases.Text))
+        //    {
+        //        txtAliases.Select(m.Index, m.Length);
+        //        txtAliases.SelectionColor = cmdCol;
+        //    }
+        //    foreach (Match m in rAlias.Matches(txtAliases.Text))
+        //    {
+        //        txtAliases.Select(m.Index, m.Length);
+        //        txtAliases.SelectionColor = aliasCol;
+        //    }
+        //
+        //    txtAliases.Select(selStart, selLen);
+        //
+        //    SendMessage(txtAliases.Handle, EM_SETSCROLLPOS, 0, ref scrollPos);
+        //    SendMessage(txtAliases.Handle, WM_SETREDRAW, 1, 0);
+        //    txtAliases.Invalidate();
+        //}
 
         private void DrawTopAccent(object sender, PaintEventArgs e, Color color)
         {
@@ -602,10 +664,14 @@ namespace conmaker
             btn.MouseUp += (s, e) => {
                 if (e.Button == MouseButtons.Left)
                 {
-                    if (btn.ClientRectangle.Contains(btn.PointToClient(Cursor.Position)))
-                        btn.BackColor = isDarkMode ? Color.FromArgb(60, 60, 65) : Color.FromArgb(200, 200, 205);
-                    else
-                        btn.BackColor = btnColor;
+                    if (btn != btnUnbindAll && btn != btnToggleIcons && btn != btnToggleCrosshair && btn != btnTheme && btn != btnLang)
+                    {
+                        if (btn.ClientRectangle.Contains(btn.PointToClient(Cursor.Position)))
+                            btn.BackColor = isDarkMode ? Color.FromArgb(60, 60, 65) : Color.FromArgb(200, 200, 205);
+                        else
+                            btn.BackColor = btnColor;
+
+                    }
                 }
             };
         }
@@ -667,6 +733,11 @@ namespace conmaker
             btnToggleIcons.ForeColor = textColor;
             globalToolTip.SetToolTip(btnToggleIcons, isEnglish ? "Toggle Weapon Icons" : "Включить/выключить иконки оружия");
 
+            btnToggleCrosshair.Text = "🎯";
+            btnToggleCrosshair.BackColor = enableCrosshair ? Color.FromArgb(180, 60, 60) : btnColor;
+            btnToggleCrosshair.ForeColor = textColor;
+            globalToolTip.SetToolTip(btnToggleCrosshair, isEnglish ? "Toggle Crosshair" : "Включить/выключить прицел");
+
             btnUnbindAll.Text = "UNBINDALL";
             btnUnbindAll.BackColor = hasUnbindAll ? Color.FromArgb(200, 80, 80) : btnColor;
             btnUnbindAll.ForeColor = hasUnbindAll ? Color.White : textColor;
@@ -682,7 +753,7 @@ namespace conmaker
             btnLang.ForeColor = textColor;
             globalToolTip.SetToolTip(btnLang, isEnglish ? "Change Language" : "Сменить язык");
 
-            lblAliases.Text = isEnglish ? "АЛИАСЫ / СКРИПТЫ" : "АЛИАСЫ / СКРИПТЫ";
+            lblAliases.Text = isEnglish ? "ALIASES / SCRIPTS" : "АЛИАСЫ / СКРИПТЫ";
             lblAliases.ForeColor = textColor;
 
             btnSnippets.BackColor = Color.FromArgb(70, 130, 180);
@@ -694,11 +765,10 @@ namespace conmaker
                 pnlAliasBorder.BackColor = isDarkMode ? Color.FromArgb(80, 80, 85) : Color.Silver;
                 txtAliases.BackColor = btnColor;
                 txtAliases.ForeColor = textColor;
-                HighlightSyntax();
+                //    HighlightSyntax();
             }
 
             DrawInterface();
-            this.Refresh();
         }
 
         private void BtnChecklist_Click(object sender, EventArgs e)
@@ -861,12 +931,15 @@ namespace conmaker
             {
                 bindings.Clear();
                 txtAliases.Text = "";
+                txtAliases.Refresh();
                 originalFileLines.Clear();
                 SetDefaultSettings();
                 hasUnbindAll = false;
 
                 currentFilePath = "";
+                File.WriteAllText(GetLastConfigPath(), ""); // Очищаем память о прошлом конфиге
                 isNewConfig = true;
+                enableCrosshair = false;
                 UpdateUIThemeAndLanguage();
             }
         }
@@ -914,7 +987,11 @@ namespace conmaker
                 newLines.Add("// Сделано при помощи Half-Life Config Maker\n");
                 if (hasUnbindAll) newLines.Add("unbindall\n");
                 newLines.Add("// --- ОСНОВНЫЕ НАСТРОЙКИ ---");
-                foreach (var kvp in settingsValues) if (!string.IsNullOrWhiteSpace(kvp.Value)) newLines.Add($"{kvp.Key} \"{kvp.Value}\"");
+                foreach (var kvp in settingsValues)
+                {
+                    if (!enableCrosshair && kvp.Key.StartsWith("cl_cross", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.IsNullOrWhiteSpace(kvp.Value)) newLines.Add($"{kvp.Key} \"{kvp.Value}\"");
+                }
                 newLines.Add("\n// --- БИНДЫ ---");
                 foreach (var kvp in bindings)
                 {
@@ -992,6 +1069,12 @@ namespace conmaker
                         {
                             if (line.StartsWith(gKey, StringComparison.OrdinalIgnoreCase))
                             {
+                                if (!enableCrosshair && gKey.StartsWith("cl_cross", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    isGeneral = true;
+                                    break;
+                                }
+
                                 if (settingsValues.ContainsKey(gKey) && !string.IsNullOrWhiteSpace(settingsValues[gKey]))
                                 {
                                     newLines.Add($"{gKey} \"{settingsValues[gKey]}\"");
@@ -1016,6 +1099,8 @@ namespace conmaker
                 bool addedHeader = false;
                 foreach (var kvp in settingsValues)
                 {
+                    if (!enableCrosshair && kvp.Key.StartsWith("cl_cross", StringComparison.OrdinalIgnoreCase)) continue;
+
                     if (!string.IsNullOrWhiteSpace(kvp.Value) && !handledGenerals.Contains(kvp.Key))
                     {
                         if (!addedHeader) { newLines.Add("\n// --- НОВЫЕ ЗАПИСИ (CONMAKER) ---"); addedHeader = true; }
@@ -1055,6 +1140,7 @@ namespace conmaker
         }
 
         private void ParseConfig(string path)
+
         {
             bindings.Clear();
             txtAliases.Text = "";
@@ -1119,6 +1205,11 @@ namespace conmaker
                         {
                             string value = line.Substring(sKey.Length).Trim(new char[] { ' ', '\t', '"' });
                             settingsValues[sKey] = value;
+
+                            if (sKey.StartsWith("cl_cross", StringComparison.OrdinalIgnoreCase))
+                            {
+                                enableCrosshair = true;
+                            }
                             break;
                         }
                     }
@@ -1126,6 +1217,8 @@ namespace conmaker
             }
 
             txtAliases.Text = string.Join(Environment.NewLine, parsedAliases);
+            txtAliases.Refresh();
+
             UpdateUIThemeAndLanguage();
         }
 
@@ -1187,18 +1280,19 @@ namespace conmaker
                     string btnName = $"btn_{key}_{row}_{col}";
                     Button btn;
 
-                    Control[] found = keyboardPanel.Controls.Find(btnName, false);
-                    if (found.Length > 0)
+                    // Пытаемся достать кнопку из кэша за О(1)
+                    if (!uiCache.TryGetValue(btnName, out btn))
                     {
-                        btn = (Button)found[0];
-                    }
-                    else
-                    {
+                        // Если её там нет — создаем с нуля
                         btn = new Button { Name = btnName, FlatStyle = FlatStyle.Flat };
                         btn.FlatAppearance.BorderSize = 0;
                         btn.Click += (s, e) => EditBind(key, btn);
                         AttachHover(btn);
+
                         keyboardPanel.Controls.Add(btn);
+
+                        // Обязательно кладем свежую кнопку в кэш для будущих вызовов!
+                        uiCache[btnName] = btn;
                     }
 
                     btn.BackColor = btnColor;
@@ -1242,18 +1336,14 @@ namespace conmaker
                     string btnName = $"btn_nav_{key}";
                     Button btn;
 
-                    Control[] found = keyboardPanel.Controls.Find(btnName, false);
-                    if (found.Length > 0)
-                    {
-                        btn = (Button)found[0];
-                    }
-                    else
+                    if (!uiCache.TryGetValue(btnName, out btn))
                     {
                         btn = new Button { Name = btnName, FlatStyle = FlatStyle.Flat };
                         btn.FlatAppearance.BorderSize = 0;
                         btn.Click += (s, e) => EditBind(key, btn);
                         AttachHover(btn);
                         keyboardPanel.Controls.Add(btn);
+                        uiCache[btnName] = btn;
                     }
 
                     btn.BackColor = btnColor;
@@ -1282,18 +1372,14 @@ namespace conmaker
                     string btnName = $"btn_num_{r}_{c}";
                     Button btn;
 
-                    Control[] found = keyboardPanel.Controls.Find(btnName, false);
-                    if (found.Length > 0)
-                    {
-                        btn = (Button)found[0];
-                    }
-                    else
+                    if (!uiCache.TryGetValue(btnName, out btn))
                     {
                         btn = new Button { Name = btnName, FlatStyle = FlatStyle.Flat };
                         btn.FlatAppearance.BorderSize = 0;
                         btn.Click += (s, e) => EditBind(key, btn);
                         AttachHover(btn);
                         keyboardPanel.Controls.Add(btn);
+                        uiCache[btnName] = btn;
                     }
 
                     btn.BackColor = btnColor;
@@ -1327,7 +1413,7 @@ namespace conmaker
                 btnUnbindAll.Left = btnChecklist.Right + 10;
             }
 
-            if (btnLang != null && btnTheme != null && btnToggleIcons != null && btnOpen != null)
+            if (btnLang != null && btnTheme != null && btnToggleIcons != null && btnToggleCrosshair != null && btnOpen != null)
             {
                 int topMenuY = 45;
                 int targetSize = 45;
@@ -1341,6 +1427,7 @@ namespace conmaker
                 btnLang.Size = new Size(targetSize, targetSize);
                 btnTheme.Size = new Size(targetSize, targetSize);
                 btnToggleIcons.Size = new Size(targetSize, targetSize);
+                btnToggleCrosshair.Size = new Size(targetSize, targetSize);
 
                 btnToggleIcons.Paint -= (s, e) => DrawTopAccent(s, e, Color.Transparent);
                 btnToggleIcons.Paint += (s, e) => DrawTopAccent(s, e, Color.FromArgb(70, 130, 180));
@@ -1355,7 +1442,8 @@ namespace conmaker
 
                 btnLang.Location = new Point(rightAlignX - btnLang.Width, topMenuY);
                 btnTheme.Location = new Point(btnLang.Left - btnTheme.Width - 10, topMenuY);
-                btnToggleIcons.Location = new Point(btnTheme.Left - btnToggleIcons.Width - 10, topMenuY);
+                btnToggleCrosshair.Location = new Point(btnTheme.Left - btnToggleCrosshair.Width - 10, topMenuY);
+                btnToggleIcons.Location = new Point(btnToggleCrosshair.Left - btnToggleIcons.Width - 10, topMenuY);
             }
 
             int bottomOfKeyboard = extraBlocksStartY + 5 * (btnHeight + padding);
@@ -1523,6 +1611,7 @@ namespace conmaker
             int columns = isCrosshairTab ? 1 : 2;
             int colWidth = isCrosshairTab ? (panelInnerWidth - chSize - 40) : (panelInnerWidth / 2);
 
+            int startYOffset = 0;
             if (isCrosshairTab)
             {
                 if (pnlCrosshairPreview == null)
@@ -1531,7 +1620,8 @@ namespace conmaker
                     pnlCrosshairPreview.Paint += DrawCrosshairPreview;
                     keyboardPanel.Controls.Add(pnlCrosshairPreview);
                 }
-                pnlCrosshairPreview.Visible = true;
+
+                pnlCrosshairPreview.Visible = enableCrosshair;
                 pnlCrosshairPreview.Size = new Size(chSize, chSize);
                 pnlCrosshairPreview.Location = new Point(settingsPanel.Right - chSize - 35, settingsPanel.Top);
                 pnlCrosshairPreview.BringToFront();
@@ -1551,7 +1641,7 @@ namespace conmaker
                 int row = drawnCount / columns;
                 int col = drawnCount % columns;
 
-                int yOffset = row * (int)(45 * scaleY);
+                int yOffset = (row * (int)(45 * scaleY)) + startYOffset;
                 int xOffset = col * colWidth;
 
                 Control[] foundLbl = settingsPanel.Controls.Find($"lbl_set_{gKey}", false);
@@ -1566,7 +1656,9 @@ namespace conmaker
                 Control[] foundTxt = settingsPanel.Controls.Find($"txt_set_{gKey}", false);
                 TextBox txt = foundTxt.Length > 0 ? (TextBox)foundTxt[0] : new TextBox { Name = $"txt_set_{gKey}", BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 10, FontStyle.Regular) };
 
-                txt.BackColor = btnColor;
+                bool isEnabled = !isCrosshairTab || enableCrosshair;
+                txt.Enabled = isEnabled;
+                txt.BackColor = isEnabled ? btnColor : Color.FromArgb(60, 60, 65);
                 txt.ForeColor = isDarkMode ? Color.White : Color.Black;
 
                 string txtVal = settingsValues.ContainsKey(gKey) && !string.IsNullOrWhiteSpace(settingsValues[gKey]) ? settingsValues[gKey] : "";
@@ -1578,7 +1670,7 @@ namespace conmaker
                 txt.Text = txtVal;
 
                 txt.Size = new Size((int)(60 * scaleX), (int)(25 * scaleY));
-                txt.Location = new Point(xOffset + (int)(170 * scaleX), yOffset + 2); // Сдвинули поле ввода правее со 130 до 170
+                txt.Location = new Point(xOffset + (int)(170 * scaleX), yOffset + 2);
                 txt.Visible = true;
 
                 if (currentTab == "ПРИЦЕЛ" && gKey.StartsWith("cl_cross"))
@@ -1605,7 +1697,6 @@ namespace conmaker
                 }
                 if (!settingsPanel.Controls.Contains(underline)) settingsPanel.Controls.Add(underline);
 
-                // Изменили шрифт с 11 до 9
                 Control[] foundBtnRes = settingsPanel.Controls.Find($"btn_res_{gKey}", false);
                 Button btnRes = foundBtnRes.Length > 0 ? (Button)foundBtnRes[0] : new Button { Name = $"btn_res_{gKey}", FlatStyle = FlatStyle.Flat, Text = "↻", Font = new Font("Segoe UI", 9, FontStyle.Bold), Cursor = Cursors.Hand };
 
@@ -1617,12 +1708,14 @@ namespace conmaker
                 btnRes.Padding = new Padding(0);
                 btnRes.TextAlign = ContentAlignment.MiddleCenter;
                 btnRes.Visible = true;
+                btnRes.Enabled = isEnabled;
 
                 if (btnRes.Tag == null)
                 {
-                    btnRes.MouseEnter += (s, e) => { btnRes.ForeColor = isDarkMode ? Color.White : Color.Black; };
-                    btnRes.MouseLeave += (s, e) => { btnRes.ForeColor = isDarkMode ? Color.Gray : Color.DarkGray; };
+                    btnRes.MouseEnter += (s, e) => { if (btnRes.Enabled) btnRes.ForeColor = isDarkMode ? Color.White : Color.Black; };
+                    btnRes.MouseLeave += (s, e) => { if (btnRes.Enabled) btnRes.ForeColor = isDarkMode ? Color.Gray : Color.DarkGray; };
                     btnRes.Click += (s, e) => {
+                        if (!btnRes.Enabled) return;
                         if (gKey.Equals("rate", StringComparison.OrdinalIgnoreCase)) txt.Text = "250000";
                         else if (gKey.Equals("ex_interp", StringComparison.OrdinalIgnoreCase)) txt.Text = "0.01";
                         else if (gKey.Equals("cl_cross_size", StringComparison.OrdinalIgnoreCase)) txt.Text = "5";
@@ -1863,8 +1956,8 @@ namespace conmaker
                     int lineEnd = txtAliases.Text.IndexOf('\n', foundAliasIndex);
                     if (lineEnd == -1) lineEnd = txtAliases.Text.Length;
 
-                    txtAliases.Select(foundAliasIndex, lineEnd - foundAliasIndex);
-                    txtAliases.ScrollToCaret();
+                    txtAliases.SetSelection(foundAliasIndex, lineEnd);
+                    txtAliases.ScrollCaret();
                 };
                 prompt.Controls.Add(btnFindAlias);
             }
@@ -1880,6 +1973,44 @@ namespace conmaker
                 else bindings[key] = newCmd;
 
                 DrawInterface();
+            }
+        }
+        private void TxtAliases_StyleNeeded(object sender, StyleNeededEventArgs e)
+        {
+            // 1. Узнаем кусок текста, который движок просит покрасить
+            int startPos = txtAliases.GetEndStyled();
+            int endPos = e.Position;
+            int length = endPos - startPos;
+
+            if (length <= 0) return;
+
+            // 2. Берем сырой текст
+            string text = txtAliases.GetTextRange(startPos, length);
+
+            // 3. Сбрасываем цвета куска в дефолт (стиль 0)
+            txtAliases.StartStyling(startPos);
+            txtAliases.SetStyling(length, 0);
+
+            // 4. Красим совпадения
+            foreach (Match m in rCommands.Matches(text))
+            {
+                txtAliases.StartStyling(startPos + m.Index);
+                txtAliases.SetStyling(m.Length, 1);
+            }
+            foreach (Match m in rBasicCmds.Matches(text))
+            {
+                txtAliases.StartStyling(startPos + m.Index);
+                txtAliases.SetStyling(m.Length, 1);
+            }
+            foreach (Match m in rQuotes.Matches(text))
+            {
+                txtAliases.StartStyling(startPos + m.Index);
+                txtAliases.SetStyling(m.Length, 2);
+            }
+            foreach (Match m in rAlias.Matches(text))
+            {
+                txtAliases.StartStyling(startPos + m.Index);
+                txtAliases.SetStyling(m.Length, 3);
             }
         }
     }
